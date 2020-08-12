@@ -1,0 +1,537 @@
+---
+title: "Pulsars_project"
+output: pdf_document
+---
+
+```{r, include=FALSE, echo=FALSE, warning = FALSE}
+library(tidyverse)
+library(caret)
+
+```
+
+```{r, include=FALSE, echo=FALSE, warning = FALSE}
+###########################
+# Create dataset
+###########################
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+
+dl <- tempfile()
+download.file("https://www.kaggle.com/pavanraj159/predicting-a-pulsar-star/download", dl)
+
+star <- unzip(dl,)
+dl
+
+dl <- read.csv("C:/Users/stevefuckyou/Desktop/pulsar_stars.csv")
+
+
+# Tidy up colmn names
+colnames(dl) <-  c("MeanIP","SdIP","ExcKurtIP","SkewIP","MeanCurve","SdCurve","ExcKurtCurve","SkewCurve","tClass")
+
+set.seed(19, sample.kind = "Rounding")
+
+# SPlit data into Train and test set
+test_index <- createDataPartition(y = dl$tClass, times = 1, p = 0.1, list = FALSE)
+small_test_index <- createDataPartition(y = dl$tClass, times = 1, p = 0.9, list = FALSE)
+train_set <- dl[-test_index,]
+small_train_set <- dl[-small_test_index,]
+test_set <- dl[test_index,]
+
+
+```
+
+```{r,echo=FALSE, warning = FALSE}
+# Due to size of the data I'm going to use a small segment to train my ensemble model
+small_train_set$tClass <- as.factor(small_train_set$tClass)
+```
+
+
+# Predicting a pulsar star
+# By Steven Jones
+## 12/08/2020
+
+## Introduction
+
+Pulsars are a form of Neutron star which is created when a massive star runs out of fuel and collapses in on itself, crushing the protons and electrons into a neutron. Pulsars are rotating Neutron stars and are observed from earth as pulses of radiation lasting from milliseconds to seconds. Pulsars funnel jets of particles, often observed as light, out of their magnetic poles like a lighthouse we only observe the pulses when they face us. 
+
+Each pulsar produces a different emissions pattern and a detection is averaged over many rotations. Scientists can use Pulsar stars to search for gravitational waves, study extreme states of matter, search for planets outside of our solar system and measure cosmic distances. However, in practice almost all detections are caused by radio frequency interference (RFI) meaning it is difficult to differentiate legitimate candidates from false RFI. 
+
+This is a dataset containing 16,259 false identifications (RFI noise) and 1,639 real pulsars all checked by human annotators. The data was collected by the High Time Resolution Survey. 
+
+Source: https://archive.ics.uci.edu/ml/datasets/HTRU2
+
+Dr Robert Lyon
+University of Manchester
+School of Physics and Astronomy
+Alan Turing Building
+Manchester M13 9PL
+United Kingdom
+robert.lyon '@' manchester.ac.uk
+
+## Project goal
+
+For this project I will be looking at several machine learning algorithms and evaluating their potential for identifying legitimate Pulsars using the HTRU2 dataset. Success will be measured by a combination of factors including accuracy, sensitivity, which is the ability of our model to correctly identify Pulsar stars (true positive) and specificity, the ability to detect a true negative. 
+
+These additional measurement are important as we will come to learn that, whilst we can do a very good job of predicting accuracy, a perfect system is not possible and so researchers would have to prioritise not missing Pulsars from data (high sensitivity) with time spent manually verifying observations (high specificity). 
+
+## Key steps performed
+
+The report initially looks at the data and its distribution to get any insight as to which machine learning methods would work best. This is a classification project and, as such, I have first looked at 2 common classification models, KNN and random forest. Both models will be optimised as well. 
+
+Once we have a good baseline, I will apply more models to the problem simultaneously to see if we can improve results by taking the majority decision on results. 
+
+
+## Analysis
+
+A Quick look at the data shows it has 9 columns, 17,898 rows and 1,639 of the observations are actual Pulsars.
+
+```{r, warning = FALSE}
+# No. of columns
+ncol(dl)
+
+#No. of rows
+nrow(dl)
+
+#No. of pulsars
+sum(dl$tClass)
+```
+
+We can also check out the Mean, Median, quartiles, min and max measurements of each column:
+
+```{r, echo = FALSE}
+
+# Summaries of Mean, Median, 1st & 3rd quartile and min and max
+summary(dl)
+```
+
+And we can do the same for just the false Pulsar signals:
+
+```{r, echo = FALSE}
+
+# Summary of the false Pulsar signals
+dl %>%
+  filter(tClass == 0) %>%
+  summary(.)
+```
+
+And again for the true Pulsar signals:
+
+```{r, echo = FALSE}
+
+# Summary of the real Pulsar signals
+dl %>%
+  filter(tClass == 1) %>%
+  summary(.)
+
+```
+
+The first steps are to get the data ready which will allow us to create models. A quick check shows us the data is complete:
+  
+```{r, warning = FALSE}
+# Check for NA's
+sum(is.na(dl))
+
+```
+
+If we plot each observation and split the data by Pulsar or not Pulsar we can see both the opportunity and the challenges, we are going to face. On one hand every measurement has overlapping observations so we can see why it has been difficult to classify results but on the other hand the range between the 1st and 3rd quartile does not overlap for any of the observation types. This will be a good place to start when coming up with predictions and should prove a useful benchmark. 
+
+We also see a significant number of outliers; we can observe that the data is skewed for most of the measurements and that it is loosely grouped. 
+
+```{r, echo = FALSE, warning = FALSE}
+# Define measure
+measure <- c("MeanIP","SdIP","ExcKurtIP","SkewIP","MeanCurve","SdCurve","ExcKurtCurve","SkewCurve")
+
+dl %>%
+  gather(Variable,results,all_of(measure)) %>%
+  ggplot(aes(Variable,results, fill = factor(tClass))) +
+  geom_boxplot() + 
+  scale_y_continuous(trans = "log2") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+If we focus in on one example we can see more clearly how the observations overlap.
+
+```{r, echo = FALSE,warning = FALSE}
+# Boxplot of one example
+dl %>%
+  gather(Variable,results,all_of(measure)) %>%
+  filter(Variable == "MeanIP") %>%
+  ggplot(aes(Variable,results, fill = factor(tClass))) +
+  geom_boxplot()
+```
+
+
+Next, I wanted to take a look at how each observation could be plotted against each other. We can see from the charts again that each observation includes some sort of overlap but that we should be able to achieve a relatively high accuracy for categorising Pulsars because some of the variables include observations which are mostly completely separate (Skew IP for example).
+
+```{r, echo = FALSE, warning = FALSE}
+# To enable colour we need to turn our Pulsars into a factor
+dl$tClass <- as.factor(dl$tClass)
+
+# Plotting all pairs against eacch other
+my_cols <- c("#0716FC","#FC0707") 
+lower_cor <- function(x, y){
+  usr <- par("usr"); on.exit(par(usr))
+  par(usr = c(0, 1, 0, 1))
+  r <- round(cor(x, y), digits=2)
+  txt <- paste0("R = ", r)
+  cex.cor <- 0.8/strwidth(txt)
+  text(0.5, 0.5, txt, cex = cex.cor * r)
+}
+
+upper_panel<-function(x, y){
+  points(x,y, pch = 19, col = my_cols[dl$tClass])
+}
+pairs(dl[-9],
+      lower.panel = lower_cor,
+      upper.panel = upper_panel)
+```
+
+### Distributions
+
+A look at the distributions also highlights that there are large areas where a significant part of the Pulsar distribution is unique. This indicates that we should be able to get a good degree of accuracy simply from predicting Pulsars should one of the measurements be above or below this cutt-off. 
+
+```{r, echo = FALSE, warning = FALSE}
+# Checking distribution of all values
+grp1 <- c("MeanIP","SdIP")
+grp2 <- c("SkewCurve","SdCurve")
+grp3 <- c("ExcKurtCurve","SdIP")
+grp4 <- c("MeanCurve","SkewIP")
+grp5 <- c("ExcKurtIP")
+dl %>% 
+  gather(Variable,results,all_of(grp1)) %>%
+  ggplot(aes(results, fill = factor(tClass))) +
+  geom_density(alpha = 0.4)+
+  facet_grid(.~ Variable,scales = "free")
+dl %>% 
+  gather(Variable,results,all_of(grp2)) %>%
+  ggplot(aes(results, fill = factor(tClass))) +
+  geom_density(alpha = 0.4)+
+  facet_grid(.~ Variable,scales = "free")
+dl %>% 
+  gather(Variable,results,all_of(grp3)) %>%
+  ggplot(aes(results, fill = factor(tClass))) +
+  geom_density(alpha = 0.4)+
+  facet_grid(.~ Variable,scales = "free")
+dl %>% 
+  gather(Variable,results,all_of(grp4)) %>%
+  ggplot(aes(results, fill = factor(tClass))) +
+  geom_density(alpha = 0.4)+
+  facet_grid(.~ Variable,scales = "free")
+dl %>% 
+  gather(Variable,results,all_of(grp5)) %>%
+  ggplot(aes(results, fill = factor(tClass))) +
+  geom_density(alpha = 0.4)+
+  facet_grid(.~ Variable,scales = "free")
+```
+
+
+
+
+We can see that some of the distributions are normally distributed whilst the Pulsar observations are not (ExcKurtIP for example).
+
+## Modelling approach
+
+From the data exploration I learned that there are large areas where there is no crossover of the data between the Pulsars and non-pulsars and so for the first approach, and to get a baseline, I have simply predicted Pulsar if the observation falls within the quartiles with no crossover.
+
+From here I have used two common classification models, KNN and Random forest and will optimise both of these before creating an ensemble to see if it's possible to improve the results further. 
+
+# Results
+
+## Classification based on 1st, 2nd and 3rd quartiles
+
+We noted earlier in our exploratory data analysis that although each observation had overlapping results this only represented a small number of observations. As a result, for our baseline I'm going to classify each observation for each category into:
+  
+  +1 if the observation falls within 1st to 3rd quartile of all Pulsar observations
+0 if the observation sits in the overlapping region
+
+Once we have these, I will take a total for each row and use the majority vote to decide if we predict Pulsar or not. 
+
+First, we set up the data by changing the Pulsars into factors with two levels. Lets check this has worked:
+
+```{r, echo = FALSE, warning = FALSE}
+# Making Pulsar observations into factor
+train_set$tClass <- as.factor(train_set$tClass)
+test_set$tClass <- as.factor(test_set$tClass)
+
+# Check these have been converted into factors
+class(train_set$tClass)
+class(test_set$tClass)
+
+# Checking factor levels
+levels(train_set$tClass)
+levels(test_set$tClass)
+```
+
+Now we can implement our classification based on 1st and 3rd quartiles. 
+
+```{r, warning = FALSE}
+# Classififcation by quartiles
+Pulsar_quartiles <- dl %>% 
+  filter(tClass == 1) %>%
+  select(all_of(measure))
+
+# Get quantiles for each measurement
+Pul_qunts <- apply(Pulsar_quartiles, 2,quantile)
+
+
+# Dividing into groups depending on which quartiles we're selecting. Group A 3rd quartile of Pulsars is max 1st quartile of non pulsars distribution is min and vice versa for Group B.
+Grpa <- c("MeanIP","SkewCurve","ExcKurtCurve","SdIP")
+Grpb <- c("SdCurve","MeanCurve","SkewIP","ExcKurtIP")
+
+# 3rd quartils for Group A Pulsar distribution
+Pul_max_a <- Pul_qunts[4,Grpa]
+
+# 1st quartile for Group B Pulsar distribution
+Pul_min_b <- Pul_qunts[2,Grpb]
+
+# Predict Pulsar if observation between 1st - 3rd quartile for Group A observations and 2nd - 4th Group B
+predict_Pulsar <- train_set %>% 
+  mutate(a = ifelse(MeanIP<Pul_max_a,1,0),
+         b = ifelse(SkewCurve<Pul_max_a,1,0),
+         c = ifelse(ExcKurtCurve<Pul_max_a,1,0),
+         d = ifelse(SdCurve>Pul_min_b,1,0),
+         e = ifelse(MeanCurve>Pul_min_b,1,0),
+         f = ifelse(SkewIP>Pul_min_b,1,0),
+         g = ifelse(ExcKurtIP>Pul_min_b,1,0)) %>%
+  select(tClass,a,b,c,d,e,f,g) %>%
+  mutate(pred = ifelse(a+b+c+d+e+f+g>3.5,1,0))
+
+# Calculate accuracy
+mean(predict_Pulsar$pred == predict_Pulsar$tClass)
+
+```
+
+For some of the observations we classified them as pulsars if they were within 1st - 3rd quartile and for the others it was the 2nd - 4th quartile which we chose. 
+
+We achieved an accuracy of 87%. 
+
+Let us look at the results in more detail:
+
+```{r, warning = FALSE}
+# Calculate confusion matrix
+confusionMatrix(as.factor(predict_Pulsar$pred), as.factor(train_set$tClass), positive = "1")
+```
+
+By further diving into the results we can see we've successfully identified 77% of the Pulsars using this method (Sensitivity) and correctly identified 88% of the Non Pulsars correctly (Specificity). 
+
+## KNN
+
+Now we need to check and see how much better our well-known machine learning models can do. 
+
+We can train a K-nearest neighbour model with the following code:
+
+```{r, warning = FALSE}
+train_knn <- train(tClass ~ ., method = "knn", data = train_set)
+knn_pred <- predict(train_knn, test_set)
+mean(knn_pred == test_set$tClass)
+```
+
+We get an accuracy of over 97% which is pretty good.
+
+Next, let's find out more about KNN and see how we could tune the model to improve the results further:
+
+```{r,echo=FALSE, eval = FALSE, warning = FALSE}
+# Get information about which parameters can be tuned
+getModelInfo("knn")
+```
+
+```{r}
+modelLookup("knn")
+```
+
+We can see that the number of nearest neighbours is the only tuning parameter. By default, KNN evaluates between 5 and 9 nearest neighbours. Let us plot these to see which was the best performing of our tuning parameter. 
+
+```{r}
+# PLot default Neighbours values
+ggplot(train_knn, highlight = TRUE)
+```
+
+From the plot we can see the default values of KNN with 9 producing the best accuracy. Because 9 is our maximum of the default values we need to run the model again with numbers higher than 9 to check if 9 is the best accuracy. This time we will also use cross validation to improve our confidence levels. 
+
+```{r, echo = FALSE}
+# Set control to use cross validation. This will run the model 10 times with a different 90% of the data each time
+control <- trainControl(method = "cv", number = 10, p = .9)
+```
+
+
+```{r, echo = FALSE}
+# We are starting with 9 nearest neighbours ad working our way up to 51
+train_knn_cv <- train(tClass ~ ., method = "knn", 
+                      data = train_set,
+                      tuneGrid = data.frame(k = seq(9, 51, 2)),
+                      trControl = control)
+#Now we plot the results to see the most accurate method
+ggplot(train_knn_cv, highlight = TRUE)
+```
+
+
+We can see that 11 KNN is the best performing model increasing our accuracy significantly to over 0.9735. Let's run the model again with 11 nearest neighbours and evaluate the results:
+
+```{r}
+# We run the model with 11 nearest neighbours
+train_knn_cv <- train(tClass ~ ., method = "knn", 
+                      data = train_set,
+                      tuneGrid = data.frame(k = 11),
+                      trControl = control)
+
+# Run predictions on test set
+train_knn_cv_pred <- predict(train_knn_cv,test_set)
+```
+
+```{r, warning = FALSE}
+#Calculate accuracy, sensitivity, specificty etc
+confusionMatrix(train_knn_cv_pred,test_set$tClass,positive = "1")
+```
+
+What is interesting is that although the accuracy has increased significantly on our baseline model, the sensitivity has decreased by around 1% indicating that it's worse performing at correctly predicting Pulsars. 
+
+Now that I have optimised the KNN algorithm I will try some other models and compare them. The next algorithm is 'Random forest' whereby our algorithm will create decision trees from many different samples of data and average the outcome out over however many 'forests' we choose to run. 
+
+## Random Forest
+
+We can train our model using the following code:
+
+```{r, warning = FALSE}
+# Train Random Forest
+Train_RF <- train(tClass ~ .,
+                  method = "Rborist",
+                  nTree = 5,
+                  data = train_set)
+```
+
+By using the random forest we've managed to increase our accuracy further to 0.976. 
+
+Lets look at the results in more detail:
+  
+```{r,echo=FALSE, warning = FALSE}
+# Apply model to test set
+RF_Pred <- predict(Train_RF,test_set)
+
+# Confusion matrix
+confusionMatrix(RF_Pred,as.factor(test_set$tClass),positive = "1")
+```
+
+We can see the Random forest improved accuracy is again from high specificity. When it comes to identifying Pulsars, it has missed over 18% but still improves quite significantly on the other two models.  
+
+Let's see what tuning parameters are available:
+  
+```{r,echo=FALSE, eval = FALSE, warning = FALSE}
+# Tuning parameters for random forest
+getModelInfo("Rborist")
+```
+
+```{r, warning = FALSE}
+modelLookup("Rborist")
+```
+
+Lets tune our model to see if we can improve our accuracy further: 
+  
+```{r, echo = FALSE, warning = FALSE}
+# Tune Random Forest
+Train_RF_tun <- train(tClass ~ .,
+                      method = "Rborist",
+                      nTree = 5,
+                      tuneGrid = data.frame(predFixed = 2, minNode = c(3, 50)),
+                      data = train_set)
+
+#Now we plot the results to see the most accurate method
+ggplot(Train_RF_tun, highlight = TRUE)
+```
+
+The best accuracy returns at 50 nodes so let's train the Random forest again based on 50 node and look at the results:
+
+```{r, warning = FALSE}
+set.seed(19, sample.kind = "Rounding")
+
+# Train Random Forest
+Train_RF_tun_top <- train(tClass ~ .,
+                      method = "Rborist",
+                      nTree = 5,
+                      tuneGrid = data.frame(predFixed = 2, minNode = 50),
+                      data = train_set)
+
+# Apply model to test set
+RF_Pred_tun <- predict(Train_RF_tun_top,test_set)
+
+# Confusion matrix
+confusionMatrix(RF_Pred_tun,as.factor(test_set$tClass),positive = "1")
+```
+
+We have a light increase in accuracy to 97.7% but sensitivity has remained the same. 
+
+Finally let's see if an ensemble by majority vote can do any better. 
+
+## Ensemble
+
+An ensemble is where we will train several different types of machine learning models and predict Pulsar if more than half of the models predict Pulsar. It can be an effective way of minimising the limitations of certain models and could improve results. 
+
+First we define the models we're going to use in the ensemble:
+  
+```{r, warning = FALSE}
+# Define models
+models <- c("svmLinear", "gamLoess", "qda", "knn","Rborist")
+```
+
+
+After training our model we can report the accuracy for each model and the average across them.
+
+```{r, echo=FALSE, warning = FALSE}
+# Apply each model to the data
+ensemble <- lapply(models,function(model){
+  print(model)
+  train(tClass ~ .,method = model, data = small_train_set)
+})
+
+# Generating a matrix of predictions for the test set data
+ensemble_pred <- sapply(ensemble, function(object) 
+  predict(object, test_set))
+dim(ensemble_pred)
+```
+
+Accuracy for each model:
+
+```{r, echo = FALSE, warning = FALSE}
+# Accuracy for each model in the ensemble
+accuracy <- colMeans(ensemble_pred == test_set$tClass)
+accuracy
+```
+
+Average accuracy across the ensemble:
+
+```{r}
+mean(accuracy)
+```
+
+We get an average accuracy of 97.3%.
+
+We now want to choose a Pulsar or not by majority decision:
+  
+```{r, warning = FALSE}
+# building the ensemble prediction model based on majority decision
+maj <- rowMeans(ensemble_pred == "1")
+y_hat <- ifelse(maj > 0.5, "1", "0")
+```
+
+Let us check the results in more detail:
+
+```{r}
+# Confusion matrix on ensemble model
+confusionMatrix(as.factor(y_hat),as.factor(test_set$tClass),positive = "1")
+```
+
+We get a final accuracy of 97.6% from our ensemble which is an improvement on knn and a very small improvement on random forest. One thing to note is the sensitivity has not increased significantly and has fallen from what we achieved on Random Forest.  
+
+# Conclusion
+
+In this report we've taken a look at the relationships between measurements of several factors used in identifying Pulsars from false signals from radio frequency interference. We've managed to get our accuracy rate up from 86% up to 97.6% and our sensitivity up from 76% to 81.8%.
+
+The major limitation of our models is they have proved very successful in identifying what is false readings from real Pulsars but less successful in identifying Pulsars correctly. That said we've established a number of different models which each have their strengths and weaknesses and could be used by researchers. 
+
+One other limitation I encountered was the time taken to run my ensemble models and in the end I had to reduce the train set down to 10% of its size to get this to run in a reasonable amount of time. With more data I would predict an improved ensemble result. 
+
+I would like to have done more work to see if we could come up with a model which had a higher sensitivity. I think for some researchers they would have sacrificed specificity, and spent time manually checking results, if it meant incorrectly identifying Pulsars as false signals. 
+
+The models we've established can be used to significantly improve detection of Pulsars which can speed up and help advance research into gravitational waves, study extreme states of matter, search for planets outside of our solar system and measure cosmic distances. 
+
